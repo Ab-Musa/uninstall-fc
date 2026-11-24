@@ -1,0 +1,37 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.uninstallfc.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.uninstallfc.app'
+        minSdk 21
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // Signed with the debug key so the APK installs straight away.
+            // Swap in your own keystore before publishing to the Play Store.
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+// The web app in /docs is the single source of truth: copy it into the APK.
+tasks.register('copyWebApp', Copy) {
+    from "${rootDir}/docs/index.html"
+    into "${projectDir}/src/main/assets"
+}
+preBuild.dependsOn copyWebApp
