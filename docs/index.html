@@ -97,6 +97,11 @@ button{cursor:pointer;border:0;background:none}
 .seg{display:flex;background:var(--s2);border-radius:12px;padding:3px}
 .seg button{height:38px;padding:0 12px;border-radius:9px;font-size:13px;font-weight:600;color:var(--mut)}
 .seg button.on{background:var(--s3);color:var(--ink)}
+.plan{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;text-align:center}
+.plan div{background:var(--s2);border-radius:12px;padding:10px 4px}
+.plan b{display:block;font-size:24px;line-height:1.1;color:var(--acc)}
+.plan span{font-size:12px;color:var(--mut)}
+.md.day{color:var(--ink);font-size:14px;margin-top:20px}
 .md{font-size:13px;font-weight:600;color:var(--mut);margin:16px 2px 8px;display:flex;justify-content:space-between}
 .mt{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:8px;padding:12px;background:var(--s1);border:1px solid var(--line);border-radius:14px;margin-bottom:8px;width:100%;text-align:left}
 .mt.can:hover{border-color:#3d4b41}
@@ -178,7 +183,7 @@ canvas.conf{position:fixed;inset:0;pointer-events:none;z-index:80}
 /* ---------- config ---------- */
 const SYNC_BASE = (()=>{try{return localStorage.getItem('ufc_sync')||'https://ntfy.sh'}catch(e){return 'https://ntfy.sh'}})();
 const TOPIC = c => 'uninstallfc_v1_' + c.toLowerCase();
-const MAX_PLAYERS = 24, MAX_K = 12;
+const MAX_PLAYERS = 24, MAX_K = 12, MAX_DAYS = 30, MAX_PD = 6, MAX_TOTAL = 160;
 
 /* ---------- utils ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -352,6 +357,52 @@ function makeFixtures(players, k){
   return out;
 }
 const played = m => m.sa != null && m.sb != null;
+// Spread matches over days: in round order, a player never plays more than pd matches on one day
+function assignDays(ms, pd){
+  let rest = ms.slice().sort((x, y) => x.r - y.r), day = 0;
+  while (rest.length){
+    day++; const cnt = {}, next = [];
+    for (const m of rest){
+      if ((cnt[m.a] || 0) < pd && (cnt[m.b] || 0) < pd){ m.d = day; cnt[m.a] = (cnt[m.a] || 0) + 1; cnt[m.b] = (cnt[m.b] || 0) + 1; }
+      else next.push(m);
+    }
+    rest = next;
+  }
+  return day;
+}
+// Best fixtures for k matches each: retry the random draw and keep the one that needs the fewest days
+function bestFixtures(players, k, pd, tries = 12){
+  let best = null, bestDays = Infinity;
+  for (let t = 0; t < tries; t++){
+    const ms = makeFixtures(players, k), days = assignDays(ms, pd);
+    if (days < bestDays){ best = ms; bestDays = days; }
+    if (days <= Math.ceil(k / pd)) break;
+  }
+  return {ms: best, days: bestDays};
+}
+// Days mode: pick matches-per-player so the plan lands on the day count closest to the target
+function planDays(n, D, pd){
+  if (n < 2) return {err: 'Add at least 2 players'};
+  const dummy = Array.from({length: n}, (_, i) => ({i: 'x' + i}));
+  const cands = [];
+  for (let k = Math.max(1, D * pd - 2 * pd); k <= D * pd + 2 * pd; k++){
+    if (n % 2 === 1 && k % 2 === 1) continue;
+    if (n * k / 2 > MAX_TOTAL) continue;
+    cands.push(k);
+  }
+  if (!cands.length) return {err: `Too many matches. Keep it under ${MAX_TOTAL} in total: fewer days or fewer matches a day.`};
+  let best = null, wantDays = null;
+  for (const k of cands){
+    const days = n % 2 === 0 ? Math.ceil(k / pd) : bestFixtures(dummy, k, pd, 6).days;
+    if (k === D * pd) wantDays = days;
+    const sc = [Math.abs(days - D), days > D ? 1 : 0, Math.abs(k - D * pd)];
+    if (!best || sc[0] < best.sc[0] || (sc[0] === best.sc[0] && (sc[1] < best.sc[1] || (sc[1] === best.sc[1] && sc[2] < best.sc[2])))) best = {k, days, sc};
+  }
+  return {k: best.k, days: best.days, total: n * best.k / 2, wantDays};
+}
+const dayDate = (st, d) => { if (!st.sd) return ''; const t = new Date(st.sd + 'T12:00:00'); t.setDate(t.getDate() + d - 1); return t; };
+const fmtDate = t => t ? t.toLocaleDateString(undefined, {weekday: 'short', day: 'numeric', month: 'short'}) : '';
+const isToday = t => t && t.toDateString() === new Date().toDateString();
 function standings(st){
   const rows = {};
   st.p.forEach(p => rows[p.i] = {p, P:0, W:0, D:0, L:0, GF:0, GA:0, Pts:0});
@@ -494,8 +545,23 @@ function playerRow(p, extra = ''){
   return `<div class="pl">${kitSVG(p.k, 36)}<span class="nm">${esc(p.n)}</span>${extra}${canEdit ? `<button class="ib" data-act="edit-p" data-p="${esc(p.i)}" aria-label="Edit ${esc(p.n)}">${ICON.edit}</button>` : ''}</div>`;
 }
 function pLobby(){
-  const st = S.st, n = st.p.length, k = st.k, bad = validK(n, k);
+  const st = S.st, n = st.p.length, days = st.mode === 'days';
+  const plan = days ? planDays(n, st.D || 3, st.pd || 2) : null;
+  const k = days ? (plan.k || st.k) : st.k;
+  const bad = days ? (plan.err || validK(n, k)) : validK(n, k);
   const total = n * k / 2;
+  let planNote = '';
+  if (plan && !plan.err){
+    const want = st.D * st.pd, parts = [];
+    if (plan.k !== want){
+      if (n % 2 === 1 && want % 2 === 1) parts.push(`With ${n} players (odd), everyone needs an even number of matches, so ${want} each isn't possible.`);
+      else if (n * want / 2 > MAX_TOTAL) parts.push(`${want} each would be ${n * want / 2} matches, over the ${MAX_TOTAL} limit.`);
+      else if (plan.wantDays) parts.push(`${want} each would need ${plan.wantDays} days, because only ${Math.floor(n / 2) * 2} of ${n} players can play at the same time.`);
+      parts.push(`${plan.k} each over ${plan.days} day${plan.days === 1 ? '' : 's'} is the closest to ${st.D}.`);
+    } else if (plan.days !== st.D) parts.push(`${plan.days} days is the closest workable plan.`);
+    planNote = parts.join(' ');
+    planNote = planNote ? `<p class="small mut" style="margin:10px 0 0">${esc(planNote)}</p>` : '';
+  }
   return `
   <div class="card sharecard"><div class="small mut">Share this code so friends can join</div><div class="bigcode">${esc(st.id)}</div>
     <div class="row2" style="margin-top:10px"><button class="btn sm" data-act="copy-code">${ICON.copy} Copy</button><button class="btn sm" data-act="share">${ICON.share} Share</button></div></div>
@@ -504,14 +570,27 @@ function pLobby(){
   ${n < MAX_PLAYERS ? `<button class="btn" style="margin-top:10px" data-act="add-p">${ICON.plus} Add player</button>` : ''}
   <div class="lbl">Format</div>
   <div class="card">
+    <div class="setrow"><div><b>Plan by</b></div>
+      ${isHost() ? `<div class="seg"><button class="${days ? '' : 'on'}" data-act="mode" data-m="k">Matches</button><button class="${days ? 'on' : ''}" data-act="mode" data-m="days">Days</button></div>` : `<span class="mut">${days ? 'Days' : 'Matches'}</span>`}</div>
+    ${days ? `
+    ${stepRow('Estimated days', 'How long the tournament should run', 'D', st.D)}
+    ${stepRow('Matches per player per day', 'Most games anyone plays in one day', 'pd', st.pd)}
+    <div class="setrow"><div><b>Start date</b><div class="small mut">Optional, to show real dates</div></div>
+      ${isHost() ? `<input class="inp" type="date" id="sd" value="${esc(st.sd || '')}" style="width:auto;height:44px;font-size:15px">` : `<span class="mut">${st.sd ? esc(fmtDate(dayDate(st, 1))) : 'Not set'}</span>`}</div>
+    ${plan && !plan.err ? `<div class="setrow" style="display:block"><div class="plan"><div><b>${plan.k}</b><span>matches each</span></div><div><b>${plan.total}</b><span>league matches</span></div><div><b>${plan.days}</b><span>day${plan.days === 1 ? '' : 's'}${plan.days !== st.D ? ` (you said ${st.D})` : ''}</span></div></div>
+      ${planNote}</div>` : ''}` : `
     <div class="setrow"><div><b>Matches per player</b><div class="small mut">${bad ? '' : `${total} league match${total === 1 ? '' : 'es'} in total`}</div></div>
-      ${isHost() ? `<div class="stepper"><button data-act="k" data-d="-1" aria-label="Fewer">−</button><output>${k}</output><button data-act="k" data-d="1" aria-label="More">+</button></div>` : `<b style="font-size:22px">${k}</b>`}</div>
+      ${isHost() ? `<div class="stepper"><button data-act="k" data-d="-1" aria-label="Fewer">−</button><output>${k}</output><button data-act="k" data-d="1" aria-label="More">+</button></div>` : `<b style="font-size:22px">${k}</b>`}</div>`}
     <div class="setrow"><div><b>Who can enter scores</b></div>
       ${isHost() ? `<div class="seg"><button class="${st.edit === 'all' ? 'on' : ''}" data-act="edit-mode" data-m="all">Everyone</button><button class="${st.edit === 'host' ? 'on' : ''}" data-act="edit-mode" data-m="host">Host only</button></div>` : `<span class="mut">${st.edit === 'all' ? 'Everyone' : 'Host only'}</span>`}</div>
     <div class="setrow"><div class="small mut">Win 3 pts · Draw 1 · Loss 0. Ties split by goal difference, then goals scored. Top 2 play the final.</div></div>
   </div>
   <div class="err">${n >= 2 ? esc(bad) : ''}</div>
   ${isHost() ? `<button class="btn pri" data-act="draw" ${bad ? 'disabled' : ''}>${ICON.shuffle} Shuffle &amp; draw fixtures</button>` : `<div class="empty">Waiting for the host to draw the fixtures…</div>`}`;
+}
+function stepRow(title, sub, key, val){
+  return `<div class="setrow"><div><b>${title}</b><div class="small mut">${sub}</div></div>
+    ${isHost() ? `<div class="stepper"><button data-act="step" data-key="${key}" data-d="-1" aria-label="Fewer">−</button><output>${val}</output><button data-act="step" data-key="${key}" data-d="1" aria-label="More">+</button></div>` : `<b style="font-size:22px">${val}</b>`}</div>`;
 }
 function matchRow(m, cls = ''){
   const A = P(m.a), B = P(m.b), pl = played(m);
@@ -524,6 +603,14 @@ function matchRow(m, cls = ''){
 }
 function pFixtures(){
   const st = S.st, rounds = {};
+  const foot = canScore() ? '<p class="small mut" style="text-align:center">Tap a match to enter the score</p>' : '<p class="small mut" style="text-align:center">Only the host can enter scores</p>';
+  if (st.m.some(m => m.d)){
+    const byDay = {}; st.m.forEach(m => (byDay[m.d] = byDay[m.d] || []).push(m));
+    return Object.keys(byDay).sort((a, b) => a - b).map(d => {
+      const ms = byDay[d].sort((x, y) => x.r - y.r), done = ms.filter(played).length, dt = dayDate(st, +d);
+      return `<div class="md day"><span>Day ${d}${dt ? ` · ${esc(fmtDate(dt))}` : ''}${isToday(dt) ? ' <span class="tag g">Today</span>' : ''}</span><span>${done}/${ms.length}</span></div>${ms.map(m => matchRow(m)).join('')}`;
+    }).join('') + foot;
+  }
   st.m.forEach(m => (rounds[m.r] = rounds[m.r] || []).push(m));
   return Object.keys(rounds).sort((a, b) => a - b).map(r => {
     const ms = rounds[r], d = ms.filter(played).length;
@@ -545,6 +632,7 @@ function pFinal(){
   ${c ? `<div class="champ">${kitSVG(P(c).k, 88)}<div class="small" style="color:var(--gold);font-weight:700;margin-top:6px">CHAMPION</div><h3>${esc(P(c).n)}</h3><p class="mut small" style="margin:6px 0 0">${esc(st.n)}</p></div>` : ''}
   <div class="card final">
     <div style="display:flex;align-items:center;justify-content:center;gap:8px;color:var(--gold);font-weight:700">${ICON.trophy.replace('<svg', '<svg width="20" height="20" style="stroke:currentColor;fill:none;stroke-width:2"')} The Final</div>
+    ${st.m.some(m => m.d) ? (() => { const last = Math.max(...st.m.map(m => m.d || 1)), dt = dayDate(st, last); return `<p class="small mut" style="margin:4px 0 0">After Day ${last}${dt ? ` · ${esc(fmtDate(dt))}` : ''}</p>`; })() : ''}
     ${ph === 'league' ? `<div class="fvs"><div class="fp"><div class="tbd">?</div><span class="mut">Finalist 1</span></div><span class="score vs">vs</span><div class="fp"><div class="tbd">?</div><span class="mut">Finalist 2</span></div></div>` : A && B ? `<div class="fvs"><div class="fp">${kitSVG(A.k, 64)}<span>${esc(A.n)}</span></div><span class="score ${scored ? '' : 'vs'}">${scored ? `${f.sa} – ${f.sb}` : 'vs'}</span><div class="fp">${kitSVG(B.k, 64)}<span>${esc(B.n)}</span></div></div>` : '<div class="empty">Not enough players yet</div>'}
     ${scored && f.sa === f.sb && f.pw ? `<p class="small" style="margin:-6px 0 10px;color:var(--gold)">${esc(P(f.pw).n)} won on penalties</p>` : ''}
     ${ph === 'league' ? `<p class="mut small" style="margin:0">${left} league match${left === 1 ? '' : 'es'} left. The top 2 in the table after the league go through.</p>` : ''}
@@ -683,12 +771,18 @@ function pinSheet(){
 
 /* ---------- draw animation ---------- */
 function doDraw(){
-  commit(t => { t.m = makeFixtures(t.p, t.k); t.f = null; t.dr = Date.now(); });
+  commit(t => {
+    if (t.mode === 'days'){
+      const plan = planDays(t.p.length, t.D, t.pd); if (plan.err) return;
+      t.k = plan.k; t.m = bestFixtures(t.p, plan.k, t.pd, 20).ms;
+    } else { t.m = makeFixtures(t.p, t.k); t.m.forEach(m => delete m.d); }
+    t.f = null; t.dr = Date.now();
+  });
 }
 async function playDraw(st){
   document.querySelectorAll('.dov').forEach(x => x.remove());
   const ov = document.createElement('div'); ov.className = 'dov';
-  ov.innerHTML = `<h2 id="dh">Shuffling players…</h2><p class="hint">${esc(st.n)} · ${st.k} match${st.k === 1 ? '' : 'es'} each</p><div class="stage" id="stage"></div><div class="dlist" id="dlist"></div><button class="btn pri" id="dgo">Skip</button>`;
+  ov.innerHTML = `<h2 id="dh">Shuffling players…</h2><p class="hint">${esc(st.n)} · ${st.k} match${st.k === 1 ? '' : 'es'} each${st.mode === 'days' && st.m.length ? ` · ${Math.max(...st.m.map(m => m.d || 1))} days` : ''}</p><div class="stage" id="stage"></div><div class="dlist" id="dlist"></div><button class="btn pri" id="dgo">Skip</button>`;
   document.body.appendChild(ov);
   let skip = false;
   ov.querySelector('#dgo').onclick = () => { skip = true; ov.remove(); };
@@ -770,6 +864,9 @@ document.addEventListener('submit', e => {
   if (c.length < 4){ S.err = 'Enter the 6-character code'; render(); return; }
   openTournament(c);
 });
+document.addEventListener('change', e => {
+  if (e.target.id === 'sd' && S.st && isHost()){ const v = e.target.value; commit(t => { t.sd = v; }); }
+});
 document.addEventListener('input', e => {
   if (S.view === 'create' && S.draft){ if (e.target.id === 'cname') S.draft.name = e.target.value; if (e.target.id === 'cme') S.draft.me = e.target.value; if (e.target.id === 'cpin') S.draft.pin = e.target.value.replace(/\D/g, ''); }
 });
@@ -787,7 +884,7 @@ document.addEventListener('click', async e => {
     let code = genCode();
     for (let t = 0; t < 4; t++){ try{ const r = await Sync.latest(code); if (!r.state) break; code = genCode(); }catch(x){ break; } }
     const pid = uid();
-    const stt = {id: code, n: name, v: 1, ts: Date.now(), h: hash(code + ':' + d.pin), edit: 'all', k: 3, p: d.me.trim() ? [{i: pid, n: d.me.trim().slice(0, 18), k: d.kit}] : [], m: [], f: null, dr: null};
+    const stt = {id: code, n: name, v: 1, ts: Date.now(), h: hash(code + ':' + d.pin), edit: 'all', k: 3, mode: 'k', D: 3, pd: 2, sd: '', p: d.me.trim() ? [{i: pid, n: d.me.trim().slice(0, 18), k: d.kit}] : [], m: [], f: null, dr: null};
     LS.set('ufc_host_' + code, true); if (d.me.trim()) LS.set('ufc_mine_' + code, [pid]);
     LS.set('ufc_t_' + code, stt); S.dirty = true; S.st = stt; S.code = code;
     await Sync.publish(stt).then(() => S.dirty = false).catch(() => {});
@@ -813,6 +910,11 @@ document.addEventListener('click', async e => {
       if (S.st.p.some(x => x.i !== p.i && x.n.toLowerCase() === nm.toLowerCase())) return 'That name is already taken';
       commit(t => { const x = t.p.find(y => y.i === p.i); x.n = nm.slice(0, 18); x.k = k; });
     }, {name: p.n, del: true});
+  }
+  else if (a === 'mode'){ if ((st.mode || 'k') !== el.dataset.m) commit(t => { t.mode = el.dataset.m; t.D = t.D || 3; t.pd = t.pd || 2; }); }
+  else if (a === 'step'){
+    const key = el.dataset.key, max = key === 'D' ? MAX_DAYS : MAX_PD, cur = st[key] || (key === 'D' ? 3 : 2);
+    const v = Math.max(1, Math.min(max, cur + +el.dataset.d)); if (v !== cur) commit(t => { t[key] = v; });
   }
   else if (a === 'k'){ const k = Math.max(1, Math.min(MAX_K, st.k + +el.dataset.d)); if (k !== st.k) commit(t => { t.k = k; }); }
   else if (a === 'edit-mode'){ if (st.edit !== el.dataset.m) commit(t => { t.edit = el.dataset.m; }); }
