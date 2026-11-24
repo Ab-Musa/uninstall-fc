@@ -45,14 +45,22 @@ button{cursor:pointer;border:0;background:none}
 .err{color:var(--red);font-size:14px;margin-top:8px;min-height:20px}
 /* home */
 .hero{position:relative;border-radius:24px;overflow:hidden;background:radial-gradient(120% 90% at 50% 0%,#1f5a33 0%,#123320 45%,#0c1a12 100%);padding:28px 20px 22px;margin-top:4px;text-align:center;isolation:isolate}
-.hero .pitch{position:absolute;inset:0;z-index:-1;opacity:.2}
+.pitch{position:absolute;inset:14px;z-index:-1;border:2px solid rgba(191,245,207,.2);border-radius:10px;pointer-events:none}
+.pitch i{position:absolute;border:2px solid rgba(191,245,207,.2)}
+.pitch .half{left:50%;top:0;bottom:0;border-width:0 0 0 2px;transform:translateX(-1px)}
+.pitch .cc{left:50%;top:50%;width:min(34%,150px);aspect-ratio:1;border-radius:50%;transform:translate(-50%,-50%)}
+.pitch .bl,.pitch .br{top:30%;height:40%;width:min(14%,70px)}
+.pitch .bl{left:-2px;border-left:0;border-radius:0 6px 6px 0}.pitch .br{right:-2px;border-right:0;border-radius:6px 0 0 6px}
 .hero h2{font-size:clamp(34px,10vw,48px);line-height:1;margin:12px 0 6px;font-weight:800;letter-spacing:-.02em}
 .hero h2 span{color:var(--acc)}
 .hero p{margin:0 auto;max-width:30ch;color:#c4d6ca}
 .crest{width:96px;height:96px;margin:0 auto;filter:drop-shadow(0 10px 18px rgba(0,0,0,.45))}
 .ubar{height:8px;border-radius:8px;background:rgba(255,255,255,.12);overflow:hidden;max-width:220px;margin:16px auto 4px}
-.ubar i{display:block;height:100%;width:0;background:var(--acc);border-radius:8px;animation:fill 2.4s ease-in-out infinite alternate}
+.ubar i{display:block;height:100%;width:100%;background:var(--acc);border-radius:8px}
+.intro .ubar i{width:0;animation:fill 1.6s cubic-bezier(.4,0,.2,1) .2s forwards}
 @keyframes fill{to{width:100%}}
+.intro .after{opacity:0;transform:translateY(10px);animation:rise .5s ease 1.85s forwards}
+@keyframes rise{to{opacity:1;transform:none}}
 .ulbl{font-size:12px;color:#a8c3b0}
 .joinrow{display:flex;gap:10px}
 .joinrow .inp{text-transform:uppercase;letter-spacing:.18em;font-weight:700;text-align:center;font-size:20px}
@@ -160,7 +168,7 @@ table.tb{width:100%;border-collapse:separate;border-spacing:0;font-variant-numer
 .dlist .mt.in{opacity:1;transform:none}
 .dov .btn{max-width:520px;margin-top:12px;flex:none}
 canvas.conf{position:fixed;inset:0;pointer-events:none;z-index:80}
-@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.intro .ubar i{width:100%}.intro .after{opacity:1;transform:none}}
 </style>
 </head>
 <body>
@@ -261,6 +269,7 @@ const Sync = {
       let ev; try{ ev = JSON.parse(l); }catch(e){ continue; }
       if (ev.event !== 'message' || !ev.message) continue;
       const st = await decode(ev.message);
+      if (st && st.id === code.toUpperCase() && st.deleted) return {state: st, time: ev.time || 0};
       if (st && st.id === code.toUpperCase() && newer(st, best)) best = st;
       if (st) time = Math.max(time, ev.time || 0);
     }
@@ -407,14 +416,15 @@ async function openTournament(code){
   render();
   try{
     const r = await Sync.latest(code);
-    if (r.state && newer(r.state, S.st)) setState(r.state);
+    if (r.state && (r.state.deleted || newer(r.state, S.st))) { setState(r.state); if (r.state.deleted) return; }
     else if (S.st && (!r.state || newer(S.st, r.state))){ S.dirty = true; flush(); } // server lost it or is behind: restore
     else if (S.st && r.time && Date.now() / 1000 - r.time > 6 * 3600){ Sync.publish(S.st).catch(() => {}); } // keep it in the 12h cache
     S.status = 'live';
   }catch(e){ S.status = 'off'; }
   if (S.view !== 't' || S.code !== code) return;
+  if (!S.st && S.status !== 'off') purge(code);
   if (!S.st){ S.view = 'join'; S.err = S.status === 'off' ? "Couldn't reach the sync server. Check your internet." : `No tournament found with code ${code}`; render(); return; }
-  Sync.subscribe(code, st => { if (S.code === code && newer(st, S.st)) setState(st); }, s => { S.status = s; paintStatus(); });
+  Sync.subscribe(code, st => { if (S.code === code && (st.deleted || newer(st, S.st))) setState(st); }, s => { S.status = s; paintStatus(); });
   render();
 }
 function genCode(){ const L = 'ABCDEFGHJKMNPQRSTUVWXYZ'; return L[rnd(L.length)] + L[rnd(L.length)] + L[rnd(L.length)] + String(rnd(1000)).padStart(3, '0'); }
@@ -422,20 +432,22 @@ function genCode(){ const L = 'ABCDEFGHJKMNPQRSTUVWXYZ'; return L[rnd(L.length)]
 /* ---------- views ---------- */
 function vHome(){
   const rec = LS.get('ufc_recent', []);
-  return `
+  const intro = !S.introDone;
+  return `<div class="${intro ? 'intro' : ''}">
   <div class="hero">
-    <svg class="pitch" viewBox="0 0 400 300" preserveAspectRatio="none"><g fill="none" stroke="#bff5cf" stroke-width="2"><rect x="10" y="10" width="380" height="280"/><path d="M200 10v280"/><circle cx="200" cy="150" r="46"/><rect x="10" y="90" width="50" height="120"/><rect x="340" y="90" width="50" height="120"/></g></svg>
+    <div class="pitch" aria-hidden="true"><i class="half"></i><i class="cc"></i><i class="bl"></i><i class="br"></i></div>
     ${CREST}
     <h2>Uninstall <span>FC</span></h2>
     <p>Draw fixtures, track every score and crown a champion, live on everyone's phone.</p>
-    <div class="ubar"><i></i></div><div class="ulbl">Uninstalling your mates…</div>
+    <div class="ubar"><i></i></div><div class="ulbl" id="ulbl">${intro ? 'Uninstalling your mates…' : 'Mates uninstalled. Kick off!'}</div>
   </div>
+  <div class="after">
   <div class="lbl">Join with a code</div>
   <form class="joinrow" id="joinf"><input class="inp" id="jcode" maxlength="6" placeholder="EFC009" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Tournament code"><button class="btn pri" type="submit">Join</button></form>
   <div class="err" id="jerr">${esc(S.err)}</div>
   <button class="btn" data-act="go-create" style="margin-top:4px">${ICON.plus} Create a tournament</button>
   ${rec.length ? `<div class="lbl">Your tournaments</div>${rec.map(r => `<button class="rec" data-act="open" data-c="${esc(r.c)}"><div class="ball">${BALL(26)}</div><div style="flex:1;min-width:0"><b>${esc(r.n)}</b><span class="code">${esc(r.c)}</span></div><span class="mut">›</span></button>`).join('')}` : ''}
-  `;
+  </div></div>`;
 }
 function vCreate(){
   const d = S.draft || (S.draft = {name:'', pin: String(1000 + rnd(9000)), me:'', kit: PRESETS[rnd(PRESETS.length)]});
@@ -719,6 +731,23 @@ function render(){
   const y = scrollY;
   app.innerHTML = S.view === 'home' ? vHome() : S.view === 'create' ? vCreate() : S.view === 'join' ? vJoin() : vT();
   if (S.view === 't') scrollTo(0, y);
+  if (S.view === 'home'){
+    if (!S.introDone){ S.introDone = true; setTimeout(() => { const l = $('#ulbl'); if (l) l.textContent = 'Mates uninstalled. Kick off!'; }, reduced ? 0 : 1800); }
+    checkRecents();
+  }
+}
+// Drop tournaments from "Your tournaments" that were deleted, or that exist nowhere any more
+let lastCheck = 0;
+async function checkRecents(){
+  if (Date.now() - lastCheck < 15000) return; lastCheck = Date.now();
+  let changed = false;
+  for (const r of LS.get('ufc_recent', [])){
+    try{
+      const x = await Sync.latest(r.c);
+      if ((x.state && x.state.deleted) || (!x.state && !LS.get('ufc_t_' + r.c, null))){ purge(r.c); changed = true; }
+    }catch(e){ return; }
+  }
+  if (changed && S.view === 'home') render();
 }
 function go(view, push = true){
   if (view !== 't'){ Sync.stop(); S.code = view === 'join' ? S.code : null; S.st = null; }
