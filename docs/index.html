@@ -144,6 +144,9 @@ table.tb{width:100%;border-collapse:separate;border-spacing:0;font-variant-numer
 .menu button{display:flex;align-items:center;gap:12px;width:100%;height:52px;padding:0 6px;border-radius:12px;font-weight:500;text-align:left}
 .menu button:hover{background:var(--s2)}
 .menu button.dan{color:var(--red)}
+.menu button svg,.ib svg,.btn svg{width:22px;height:22px;flex:none;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.btn svg{width:18px;height:18px}
+.tbd{width:64px;height:64px;border-radius:50%;border:2px dashed #5a5030;display:grid;place-items:center;font-size:26px;font-weight:800;color:#8a7a3e}
 .toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 24px);transform:translateX(-50%);background:#e9f2ec;color:#0e1310;padding:10px 16px;border-radius:12px;font-weight:600;font-size:14px;z-index:90;animation:up .2s;max-width:90vw}
 /* draw overlay */
 .dov{position:fixed;inset:0;z-index:60;background:radial-gradient(100% 70% at 50% 30%,#163824,#070b08 80%);display:flex;flex-direction:column;align-items:center;padding:calc(env(safe-area-inset-top) + 28px) 16px calc(env(safe-area-inset-bottom) + 20px);animation:fade .3s}
@@ -366,6 +369,11 @@ function remember(st){
   rec.unshift({c: st.id, n: st.n, t: Date.now()}); LS.set('ufc_recent', rec.slice(0, 8));
 }
 function setState(st, {local = false} = {}){
+  if (st.deleted){
+    purge(st.id); Sync.stop(); closeSheet(); document.querySelectorAll('.dov').forEach(x => x.remove());
+    S.st = null; S.code = null; S.view = 'home'; S.err = `Tournament ${st.id} was deleted by the host`;
+    history.replaceState(null, '', location.pathname + location.search); render(); toast('Tournament deleted'); return;
+  }
   const prev = S.st;
   S.st = st; LS.set('ufc_t_' + st.id, st); remember(st);
   if (local){ S.dirty = true; flush(); }
@@ -404,6 +412,7 @@ async function openTournament(code){
     else if (S.st && r.time && Date.now() / 1000 - r.time > 6 * 3600){ Sync.publish(S.st).catch(() => {}); } // keep it in the 12h cache
     S.status = 'live';
   }catch(e){ S.status = 'off'; }
+  if (S.view !== 't' || S.code !== code) return;
   if (!S.st){ S.view = 'join'; S.err = S.status === 'off' ? "Couldn't reach the sync server. Check your internet." : `No tournament found with code ${code}`; render(); return; }
   Sync.subscribe(code, st => { if (S.code === code && newer(st, S.st)) setState(st); }, s => { S.status = s; paintStatus(); });
   render();
@@ -524,9 +533,9 @@ function pFinal(){
   ${c ? `<div class="champ">${kitSVG(P(c).k, 88)}<div class="small" style="color:var(--gold);font-weight:700;margin-top:6px">CHAMPION</div><h3>${esc(P(c).n)}</h3><p class="mut small" style="margin:6px 0 0">${esc(st.n)}</p></div>` : ''}
   <div class="card final">
     <div style="display:flex;align-items:center;justify-content:center;gap:8px;color:var(--gold);font-weight:700">${ICON.trophy.replace('<svg', '<svg width="20" height="20" style="stroke:currentColor;fill:none;stroke-width:2"')} The Final</div>
-    ${A && B ? `<div class="fvs"><div class="fp">${kitSVG(A.k, 64)}<span>${esc(A.n)}</span></div><span class="score ${scored ? '' : 'vs'}">${scored ? `${f.sa} – ${f.sb}` : 'vs'}</span><div class="fp">${kitSVG(B.k, 64)}<span>${esc(B.n)}</span></div></div>` : '<div class="empty">Not enough players yet</div>'}
+    ${ph === 'league' ? `<div class="fvs"><div class="fp"><div class="tbd">?</div><span class="mut">Finalist 1</span></div><span class="score vs">vs</span><div class="fp"><div class="tbd">?</div><span class="mut">Finalist 2</span></div></div>` : A && B ? `<div class="fvs"><div class="fp">${kitSVG(A.k, 64)}<span>${esc(A.n)}</span></div><span class="score ${scored ? '' : 'vs'}">${scored ? `${f.sa} – ${f.sb}` : 'vs'}</span><div class="fp">${kitSVG(B.k, 64)}<span>${esc(B.n)}</span></div></div>` : '<div class="empty">Not enough players yet</div>'}
     ${scored && f.sa === f.sb && f.pw ? `<p class="small" style="margin:-6px 0 10px;color:var(--gold)">${esc(P(f.pw).n)} won on penalties</p>` : ''}
-    ${ph === 'league' ? `<p class="mut small" style="margin:0">${left} league match${left === 1 ? '' : 'es'} left. These are the top 2 as it stands.</p>` : ''}
+    ${ph === 'league' ? `<p class="mut small" style="margin:0">${left} league match${left === 1 ? '' : 'es'} left. The top 2 in the table after the league go through.</p>` : ''}
     ${ph !== 'league' && ph !== 'lobby' && canScore() ? `<button class="btn ${scored ? '' : 'gold'}" data-act="score-final">${scored ? 'Edit final score' : 'Enter final score'}</button>` : ''}
     ${ph === 'final' && !canScore() ? '<p class="mut small" style="margin:0">Waiting for the host to enter the final score…</p>' : ''}
   </div>`;
@@ -619,6 +628,7 @@ function menuSheet(){
     ${host && st.m.length && !anyScore ? `<button data-mi="redraw">${ICON.shuffle} Redraw fixtures</button><button data-mi="lobby">${ICON.undo} Back to lobby</button>` : ''}
     ${host && st.m.length ? `<button data-mi="mode">${ICON.edit} Score entry: ${st.edit === 'all' ? 'Everyone' : 'Host only'} (tap to switch)</button>` : ''}
     ${host && st.f && st.f.sa != null ? `<button data-mi="unfinal">${ICON.undo} Clear final result</button>` : ''}
+    ${host ? `<button data-mi="delete" class="dan">${ICON.x} Delete tournament for everyone</button>` : ''}
     <button data-mi="leave" class="dan">${ICON.out} Remove from this device</button>
   </div>`, s => {
     s.querySelector('.menu').onclick = e => {
@@ -629,10 +639,26 @@ function menuSheet(){
       if (a === 'lobby'){ commit(t => { t.m = []; t.f = null; t.dr = null; }); closeSheet(); }
       if (a === 'mode'){ commit(t => { t.edit = t.edit === 'all' ? 'host' : 'all'; }); closeSheet(); }
       if (a === 'unfinal'){ commit(t => { t.f = null; }); closeSheet(); }
-      if (a === 'leave'){ LS.set('ufc_recent', LS.get('ufc_recent', []).filter(r => r.c !== st.id)); LS.del('ufc_t_' + st.id); LS.del('ufc_host_' + st.id); closeSheet(); go('home'); }
+      if (a === 'leave'){ purge(st.id); closeSheet(); go('home'); }
+      if (a === 'delete') deleteSheet();
     };
   });
 }
+function deleteSheet(){
+  const st = S.st;
+  sheet(`<h3>Delete tournament?</h3><p class="mut" style="text-align:center;margin:0 0 16px">"${esc(st.n)}" (${esc(st.id)}) will be removed for everyone, with all fixtures and scores. This can't be undone.</p>
+    <button class="btn" id="dyes" style="background:var(--red);color:#2a0606;border:0">Delete for everyone</button>
+    <button class="btn" id="dno" style="margin-top:8px">Cancel</button>`, s => {
+    s.querySelector('#dno').onclick = closeSheet;
+    s.querySelector('#dyes').onclick = async () => {
+      const tomb = {id: st.id, n: st.n, v: (st.v || 0) + 1, ts: Date.now(), deleted: true};
+      s.querySelector('#dyes').disabled = true; s.querySelector('#dyes').textContent = 'Deleting…';
+      try{ await Sync.publish(tomb); }catch(e){ s.querySelector('#dyes').disabled = false; s.querySelector('#dyes').textContent = 'Delete for everyone'; toast("Couldn't reach the server. Try again."); return; }
+      closeSheet(); setState(tomb);
+    };
+  });
+}
+function purge(code){ LS.set('ufc_recent', LS.get('ufc_recent', []).filter(r => r.c !== code)); ['ufc_t_', 'ufc_host_', 'ufc_mine_', 'ufc_seen_'].forEach(k => LS.del(k + code)); }
 function pinSheet(){
   sheet(`<h3>Host PIN</h3><input class="inp" id="pin" inputmode="numeric" maxlength="6" placeholder="PIN" style="text-align:center;font-size:22px;letter-spacing:.3em"><div class="err" id="perr"></div><button class="btn pri" id="pok">Unlock host controls</button>`, s => {
     const i = s.querySelector('#pin'); i.focus();
